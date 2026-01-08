@@ -31,6 +31,52 @@ MONTH_MAP = {
     "dec": 12, "december": 12,
 }
 
+MEDICAL_AIDS = [
+    "ADVANTAGE",
+    "AETNA",
+    "ALLIANCE HEALTH ADMINISTRATOR",
+    "ALLIANZ",
+    "BAINES INTERCARE MEDICAL CENTRE",
+    "BONVIE",
+    "BUPA INTERNATIONAL",
+    "CAFCA",
+    "CASH SALES",
+    "CELLMED",
+    "CELLMED - PREFUND",
+    "CIGNA",
+    "CIMAS",
+    "DR D MOYO",
+    "DR G.T. CHATORA",
+    "DR KP KUSUTA",
+    "DR MUNGWADZI",
+    "DR NP MABOREKE",
+    "FBC HEALTH INSURANCE",
+    "FBC HOLDINGS SELF - MANAGED FUND",
+    "FIDELITY MEDICAL FUND",
+    "FIRST MUTUAL",
+    "GENERATIONS MEDICAL AID",
+    "GUNHILL MEDICAL VILLAGE",
+    "HEALTH INTERNATIONAL",
+    "HENNER HEALTHCARE",
+    "HIPPO VALLEY ESTATES",
+    "HORIZON INTERNATIONAL CARE",
+    "INTERVENTIONAL RADIOLOGY CLINIC",
+    "MAISHA HEALTH FUND",
+    "MASCA",
+    "MILTON PARK MEDICAL CENTRE",
+    "MSH INTERNATIONAL",
+    "MULTIMED",
+    "NATIONAL PARKS",
+    "NEWLANDS CLINIC",
+    "NORTHERN MEDICAL AID SOCIETY",
+    "OXFAM",
+    "QUEST VITALITY MEDICAL SCHEME",
+    "SEND ACCOUNT",
+    "VARICHEM PHARMACEUTICALS (PVT) LTD",
+    "WORLD HEALTH ORGANISATION",
+    "ZIMBABWE LEAF TOBACCO CLINIC",
+]
+
 # ------------------------------------------------------------
 # HELPERS
 # ------------------------------------------------------------
@@ -43,12 +89,25 @@ def normalise_month(sheet_name: str):
 
 def extract_payer(description):
     if pd.isna(description):
-        return "UNKNOWN"
+        return "UNMAPPED"
+
     text = str(description).upper()
-    for key in ["PSMAS", "CIMAS", "NSSA", "MEDCOR", "FIRST MUTUAL", "ZIMNAT"]:
-        if key in text:
-            return key
-    return "OTHER"
+
+    noise = [
+        "TRANSFER", "RTGS", "EFT", "PAYMENT", "CREDIT",
+        "NOSTRO", "SETTLEMENT", "REF", "TRF",
+        "STANBIC", "CBZ", "FBC", "ECOCASH"
+    ]
+    for n in noise:
+        text = text.replace(n, "")
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    for aid in MEDICAL_AIDS:
+        if aid in text:
+            return aid
+
+    return "UNMAPPED"
 
 # ------------------------------------------------------------
 # DATA LOADER (NO HEADERS, SAFE)
@@ -72,18 +131,14 @@ def load_workbook(file, year):
         if df.empty:
             continue
 
-        # Fill merged cells
         df = df.ffill(axis=0)
 
-        # HARD SAFETY CHECK
         if df.shape[1] < 4:
             continue
 
-        # Force known structure
         df = df.iloc[:, :4]
         df.columns = ["date", "payer", "reference", "amount"]
 
-        # Keep only rows with numeric amount
         df = df[pd.to_numeric(df["amount"], errors="coerce").notna()]
         if df.empty:
             continue
@@ -227,3 +282,19 @@ if alerts:
     st.dataframe(pd.DataFrame(alerts))
 else:
     st.success("No critical alerts detected.")
+
+# ------------------------------------------------------------
+# DATA QUALITY – UNMAPPED
+# ------------------------------------------------------------
+st.subheader("Unmapped Deposits (Review Required)")
+
+unmapped = data[data["payer"] == "UNMAPPED"]
+
+if unmapped.empty:
+    st.success("All deposits successfully mapped to medical aids.")
+else:
+    st.warning("Some deposits could not be mapped.")
+    st.dataframe(
+        unmapped[["date", "amount_usd", "year_month"]],
+        use_container_width=True
+    )
