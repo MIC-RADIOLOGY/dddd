@@ -39,41 +39,29 @@ def normalise_month(sheet_name: str):
     for k, v in MONTH_MAP.items():
         if k in s:
             return v
-    match = re.match(r"(\d{1,2})[-_ ]?([a-z]+)?", s)
-    if match:
-        digit = int(match.group(1))
-        if 1 <= digit <= 12:
-            return digit
-        text = match.group(2)
-        if text:
-            for k, v in MONTH_MAP.items():
-                if k.startswith(text):
-                    return v
     return None
 
-def extract_payer(description: str):
+def extract_payer(description):
     if pd.isna(description):
         return "UNKNOWN"
-    text = description.upper()
+    text = str(description).upper()
     for key in ["PSMAS", "CIMAS", "NSSA", "MEDCOR", "FIRST MUTUAL", "ZIMNAT"]:
         if key in text:
             return key
     return "OTHER"
 
+# ------------------------------------------------------------
+# DATA LOADER (NO HEADERS, SAFE)
+# ------------------------------------------------------------
 def load_workbook(file, year):
     try:
-        # Read all sheets without headers
         raw_sheets = pd.read_excel(file, sheet_name=None, header=None)
-    except ImportError:
-        st.error("Missing dependency: openpyxl is required.")
-        st.stop()
     except Exception as e:
         st.error(f"Failed to read Excel file: {e}")
         st.stop()
 
     frames = []
 
-    # Debug info can be removed for production
     st.write("Sheets detected:", list(raw_sheets.keys()))
 
     for sheet_name, df in raw_sheets.items():
@@ -81,32 +69,36 @@ def load_workbook(file, year):
         if not month:
             continue
 
-        # Fill merged cells vertically
+        if df.empty:
+            continue
+
+        # Fill merged cells
         df = df.ffill(axis=0)
 
-        # Force columns since headers are missing
+        # HARD SAFETY CHECK
         if df.shape[1] < 4:
-            continue  # skip if not enough columns
+            continue
+
+        # Force known structure
+        df = df.iloc[:, :4]
         df.columns = ["date", "payer", "reference", "amount"]
 
         # Keep only rows with numeric amount
         df = df[pd.to_numeric(df["amount"], errors="coerce").notna()]
-
         if df.empty:
             continue
 
-        # Prepare output dataframe
         out = pd.DataFrame()
         out["date"] = pd.to_datetime(df["date"], errors="coerce")
         out["payer"] = df["payer"].apply(extract_payer)
         out["amount_usd"] = pd.to_numeric(df["amount"], errors="coerce")
-        out["amount_zwl"] = 0.0  # assume USD
+        out["amount_zwl"] = 0.0
         out["year_month"] = f"{year}-{month:02d}"
 
         frames.append(out)
 
     if not frames:
-        st.error("No valid monthly sheets detected. Check sheet data.")
+        st.error("No valid monthly data detected.")
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
@@ -158,36 +150,43 @@ prev_df = data[data["year_month"] == previous_month] if previous_month else None
 total_current = current_df[amount_col].sum()
 total_previous = prev_df[amount_col].sum() if prev_df is not None else None
 
-col1, col2, col3 = st.columns(3)
-col1.metric(f"Total {currency}", f"{total_current:,.2f}")
-if total_previous is not None and total_previous != 0:
-    change_pct = ((total_current - total_previous) / total_previous) * 100
-    col2.metric("MoM Change", f"{change_pct:.1f}%", delta=f"{change_pct:.1f}%")
+c1, c2, c3 = st.columns(3)
+c1.metric(f"Total {currency}", f"{total_current:,.2f}")
+
+if total_previous and total_previous != 0:
+    pct = ((total_current - total_previous) / total_previous) * 100
+    c2.metric("MoM Change", f"{pct:.1f}%", delta=f"{pct:.1f}%")
 else:
-    col2.metric("MoM Change", "N/A")
-col3.metric("Active Medical Aids", current_df[current_df[amount_col] > 0]["payer"].nunique())
+    c2.metric("MoM Change", "N/A")
+
+c3.metric(
+    "Active Medical Aids",
+    current_df[current_df[amount_col] > 0]["payer"].nunique()
+)
 
 # ------------------------------------------------------------
 # RANKINGS
 # ------------------------------------------------------------
 st.subheader("Medical Aid Rankings")
+
 ranking = (
     current_df.groupby("payer")[amount_col]
     .sum()
     .sort_values(ascending=False)
     .reset_index()
 )
+
 ranking["rank"] = range(1, len(ranking) + 1)
 ranking["contribution_%"] = (ranking[amount_col] / total_current * 100).round(2)
+
 st.dataframe(ranking, use_container_width=True)
 
 # ------------------------------------------------------------
-# COMPARISON
+# MONTH-ON-MONTH COMPARISON
 # ------------------------------------------------------------
 st.subheader("Month-on-Month Comparison")
-if previous_month is None:
-    st.info("Only one month available. Comparisons will activate automatically once a new month is added.")
-else:
+
+if previous_month:
     comparison = (
         current_df.groupby("payer")[amount_col].sum()
         .to_frame("current")
@@ -197,20 +196,25 @@ else:
         )
         .fillna(0)
     )
+
     comparison["change"] = comparison["current"] - comparison["previous"]
     comparison["change_%"] = np.where(
         comparison["previous"] == 0,
         np.nan,
         (comparison["change"] / comparison["previous"]) * 100
     )
+
     st.dataframe(comparison.reset_index(), use_container_width=True)
+else:
+    st.info("Only one month available. Comparison will activate automatically.")
 
 # ------------------------------------------------------------
 # RISK ALERTS
 # ------------------------------------------------------------
 st.subheader("Risk Alerts")
+
 alerts = []
-if previous_month is not None:
+if previous_month:
     for payer, row in comparison.iterrows():
         if row["previous"] > 0 and row["change_%"] < -30:
             alerts.append({
