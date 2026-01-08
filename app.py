@@ -60,6 +60,17 @@ def extract_payer(description: str):
             return key
     return "OTHER"
 
+def detect_header_row(df):
+    """
+    Detect the header row by looking for the row that contains keywords like 'date', 'description', 'usd', or 'zwl'.
+    Returns the row index (0-based) to use as header.
+    """
+    for i, row in df.iterrows():
+        row_str = [str(cell).strip().lower() for cell in row.values]
+        if any(k in row_str for k in ["date", "description", "desc", "usd", "zwl"]):
+            return i
+    return 0  # fallback to first row
+
 def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     df = df.copy()
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
@@ -92,7 +103,8 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
 
 def load_workbook(file, year):
     try:
-        sheets = pd.read_excel(file, sheet_name=None)
+        # Read all sheets without assuming headers
+        raw_sheets = pd.read_excel(file, sheet_name=None, header=None)
     except ImportError:
         st.error("Missing dependency: openpyxl is required. Please check your requirements.txt")
         st.stop()
@@ -102,13 +114,17 @@ def load_workbook(file, year):
 
     frames = []
 
-    # Debug: show all sheet names
-    st.write("Sheets detected in the workbook:", list(sheets.keys()))
+    st.write("Sheets detected in the workbook:", list(raw_sheets.keys()))
 
-    for sheet, df in sheets.items():
-        month = normalise_month(sheet)
+    for sheet_name, df in raw_sheets.items():
+        month = normalise_month(sheet_name)
         if not month:
             continue
+
+        header_row = detect_header_row(df)
+        df.columns = df.iloc[header_row]
+        df = df.iloc[header_row + 1 :].reset_index(drop=True)
+
         cleaned = clean_month_sheet(df, year, month)
         if not cleaned.empty:
             frames.append(cleaned)
