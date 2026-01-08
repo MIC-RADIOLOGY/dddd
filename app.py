@@ -60,16 +60,16 @@ def extract_payer(description: str):
             return key
     return "OTHER"
 
-def detect_header_row(df):
+def find_header_row(df):
     """
-    Detect the header row by looking for the row that contains keywords like 'date', 'description', 'usd', or 'zwl'.
-    Returns the row index (0-based) to use as header.
+    Look for the first row containing likely header keywords.
+    Returns the row index.
     """
     for i, row in df.iterrows():
-        row_str = [str(cell).strip().lower() for cell in row.values]
-        if any(k in row_str for k in ["date", "description", "desc", "usd", "zwl"]):
+        row_strs = [str(x).strip().lower() for x in row.values]
+        if any(k in row_strs for k in ["date", "description", "desc", "usd", "zwl"]):
             return i
-    return 0  # fallback to first row
+    return 0  # fallback
 
 def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     df = df.copy()
@@ -86,9 +86,6 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     usd_col = next((c for c in df.columns if any(dc in c for dc in usd_cols)), None)
     zwl_col = next((c for c in df.columns if any(dc in c for dc in zwl_cols)), None)
 
-    # Debug: show detected columns
-    st.write(f"Detected columns -> date: {date_col}, desc: {desc_col}, usd: {usd_col}, zwl: {zwl_col}")
-
     if not any([usd_col, zwl_col]):
         return pd.DataFrame()
 
@@ -103,10 +100,10 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
 
 def load_workbook(file, year):
     try:
-        # Read all sheets without assuming headers
+        # Read without headers first
         raw_sheets = pd.read_excel(file, sheet_name=None, header=None)
     except ImportError:
-        st.error("Missing dependency: openpyxl is required. Please check your requirements.txt")
+        st.error("Missing dependency: openpyxl is required.")
         st.stop()
     except Exception as e:
         st.error(f"Failed to read Excel file: {e}")
@@ -114,14 +111,15 @@ def load_workbook(file, year):
 
     frames = []
 
-    st.write("Sheets detected in the workbook:", list(raw_sheets.keys()))
+    st.write("Sheets detected:", list(raw_sheets.keys()))
 
     for sheet_name, df in raw_sheets.items():
         month = normalise_month(sheet_name)
         if not month:
             continue
 
-        header_row = detect_header_row(df)
+        # Detect header row
+        header_row = find_header_row(df)
         df.columns = df.iloc[header_row]
         df = df.iloc[header_row + 1 :].reset_index(drop=True)
 
@@ -130,7 +128,7 @@ def load_workbook(file, year):
             frames.append(cleaned)
 
     if not frames:
-        st.error("No valid monthly sheets detected. Check your sheet names and columns.")
+        st.error("No valid monthly sheets detected. Check sheet headers.")
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
@@ -183,22 +181,18 @@ total_current = current_df[amount_col].sum()
 total_previous = prev_df[amount_col].sum() if prev_df is not None else None
 
 col1, col2, col3 = st.columns(3)
-
 col1.metric(f"Total {currency}", f"{total_current:,.2f}")
-
 if total_previous is not None and total_previous != 0:
     change_pct = ((total_current - total_previous) / total_previous) * 100
     col2.metric("MoM Change", f"{change_pct:.1f}%", delta=f"{change_pct:.1f}%")
 else:
     col2.metric("MoM Change", "N/A")
-
 col3.metric("Active Medical Aids", current_df[current_df[amount_col] > 0]["payer"].nunique())
 
 # ------------------------------------------------------------
 # RANKINGS
 # ------------------------------------------------------------
 st.subheader("Medical Aid Rankings")
-
 ranking = (
     current_df.groupby("payer")[amount_col]
     .sum()
@@ -213,7 +207,6 @@ st.dataframe(ranking, use_container_width=True)
 # COMPARISON
 # ------------------------------------------------------------
 st.subheader("Month-on-Month Comparison")
-
 if previous_month is None:
     st.info("Only one month available. Comparisons will activate automatically once a new month is added.")
 else:
@@ -238,9 +231,7 @@ else:
 # RISK ALERTS
 # ------------------------------------------------------------
 st.subheader("Risk Alerts")
-
 alerts = []
-
 if previous_month is not None:
     for payer, row in comparison.iterrows():
         if row["previous"] > 0 and row["change_%"] < -30:
@@ -254,3 +245,4 @@ if alerts:
     st.dataframe(pd.DataFrame(alerts))
 else:
     st.success("No critical alerts detected.")
+
