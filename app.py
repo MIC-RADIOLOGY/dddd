@@ -63,13 +63,13 @@ def extract_payer(description: str):
 def find_header_row(df):
     """
     Look for the first row containing likely header keywords.
-    Returns the row index.
+    Returns the row index or None if not found.
     """
     for i, row in df.iterrows():
         row_strs = [str(x).strip().lower() for x in row.values]
         if any(k in row_strs for k in ["date", "description", "desc", "usd", "zwl"]):
             return i
-    return 0  # fallback
+    return None
 
 def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     df = df.copy()
@@ -100,7 +100,7 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
 
 def load_workbook(file, year):
     try:
-        # Read without headers first
+        # Read all sheets without headers
         raw_sheets = pd.read_excel(file, sheet_name=None, header=None)
     except ImportError:
         st.error("Missing dependency: openpyxl is required.")
@@ -118,9 +118,17 @@ def load_workbook(file, year):
         if not month:
             continue
 
+        # Fill merged cells vertically
+        df = df.ffill(axis=0)
+
         # Detect header row
         header_row = find_header_row(df)
-        df.columns = df.iloc[header_row]
+        if header_row is None:
+            st.warning(f"No header found in {sheet_name}, skipping.")
+            continue
+
+        # Set header and take remaining rows as data
+        df.columns = df.iloc[header_row].values
         df = df.iloc[header_row + 1 :].reset_index(drop=True)
 
         cleaned = clean_month_sheet(df, year, month)
@@ -245,4 +253,3 @@ if alerts:
     st.dataframe(pd.DataFrame(alerts))
 else:
     st.success("No critical alerts detected.")
-
