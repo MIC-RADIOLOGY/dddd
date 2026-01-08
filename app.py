@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import re
 
 st.set_page_config(
     page_title="Direct Deposit Cashflow Analytics",
@@ -34,10 +35,26 @@ MONTH_MAP = {
 # HELPERS
 # ------------------------------------------------------------
 def normalise_month(sheet_name: str):
-    s = sheet_name.lower()
+    s = sheet_name.lower().strip()
+
+    # Check for standard month names
     for k, v in MONTH_MAP.items():
         if k in s:
             return v
+
+    # Check for digits at start like "01-Jan" or "1-Feb"
+    match = re.match(r"(\d{1,2})[-_ ]?([a-z]+)?", s)
+    if match:
+        digit = int(match.group(1))
+        if 1 <= digit <= 12:
+            return digit
+        # Also check text month if present
+        text = match.group(2)
+        if text:
+            for k, v in MONTH_MAP.items():
+                if k.startswith(text):
+                    return v
+
     return None
 
 
@@ -55,7 +72,6 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # Heuristic column detection
     date_col = next((c for c in df.columns if "date" in c), None)
     desc_col = next((c for c in df.columns if "desc" in c or "narr" in c), None)
     usd_col = next((c for c in df.columns if "usd" in c), None)
@@ -78,7 +94,7 @@ def load_workbook(file, year):
     try:
         sheets = pd.read_excel(file, sheet_name=None)
     except ImportError:
-        st.error("Missing dependency: openpyxl is required to read Excel files. Install it via `pip install openpyxl`.")
+        st.error("Missing dependency: openpyxl is required. Please check your requirements.txt")
         st.stop()
     except Exception as e:
         st.error(f"Failed to read Excel file: {e}")
@@ -94,9 +110,11 @@ def load_workbook(file, year):
         frames.append(cleaned)
 
     if not frames:
+        st.error("No valid monthly sheets detected. Check your sheet names.")
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
+
 
 # ------------------------------------------------------------
 # UI – FILE UPLOAD
@@ -120,7 +138,6 @@ financial_year = st.number_input(
 data = load_workbook(uploaded, financial_year)
 
 if data.empty:
-    st.error("No valid monthly sheets detected.")
     st.stop()
 
 # ------------------------------------------------------------
@@ -134,7 +151,6 @@ previous_month = months[-2] if len(months) > 1 else None
 # CURRENCY SELECTION
 # ------------------------------------------------------------
 currency = st.radio("Currency", ["USD", "ZWL"], horizontal=True)
-
 amount_col = "amount_usd" if currency == "USD" else "amount_zwl"
 
 # ------------------------------------------------------------
@@ -150,25 +166,15 @@ total_previous = prev_df[amount_col].sum() if prev_df is not None else None
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric(
-    f"Total {currency}",
-    f"{total_current:,.2f}",
-)
+col1.metric(f"Total {currency}", f"{total_current:,.2f}")
 
 if total_previous is not None and total_previous != 0:
     change_pct = ((total_current - total_previous) / total_previous) * 100
-    col2.metric(
-        "MoM Change",
-        f"{change_pct:.1f}%",
-        delta=f"{change_pct:.1f}%"
-    )
+    col2.metric("MoM Change", f"{change_pct:.1f}%", delta=f"{change_pct:.1f}%")
 else:
     col2.metric("MoM Change", "N/A")
 
-col3.metric(
-    "Active Medical Aids",
-    current_df[current_df[amount_col] > 0]["payer"].nunique()
-)
+col3.metric("Active Medical Aids", current_df[current_df[amount_col] > 0]["payer"].nunique())
 
 # ------------------------------------------------------------
 # RANKINGS
@@ -181,14 +187,12 @@ ranking = (
     .sort_values(ascending=False)
     .reset_index()
 )
-
 ranking["rank"] = range(1, len(ranking) + 1)
 ranking["contribution_%"] = (ranking[amount_col] / total_current * 100).round(2)
-
 st.dataframe(ranking, use_container_width=True)
 
 # ------------------------------------------------------------
-# COMPARISON (AUTO-DISABLED FOR JAN)
+# COMPARISON
 # ------------------------------------------------------------
 st.subheader("Month-on-Month Comparison")
 
@@ -204,14 +208,12 @@ else:
         )
         .fillna(0)
     )
-
     comparison["change"] = comparison["current"] - comparison["previous"]
     comparison["change_%"] = np.where(
         comparison["previous"] == 0,
         np.nan,
         (comparison["change"] / comparison["previous"]) * 100
     )
-
     st.dataframe(comparison.reset_index(), use_container_width=True)
 
 # ------------------------------------------------------------
