@@ -1,0 +1,10 @@
+
+---
+
+# 3️⃣ `requirements.txt`
+
+```txt
+streamlit
+pandas
+numpy
+openpyxl
