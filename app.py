@@ -36,13 +36,9 @@ MONTH_MAP = {
 # ------------------------------------------------------------
 def normalise_month(sheet_name: str):
     s = sheet_name.lower().strip()
-
-    # Check for standard month names
     for k, v in MONTH_MAP.items():
         if k in s:
             return v
-
-    # Check for digits at start like "01-Jan" or "1-Feb"
     match = re.match(r"(\d{1,2})[-_ ]?([a-z]+)?", s)
     if match:
         digit = int(match.group(1))
@@ -55,7 +51,6 @@ def normalise_month(sheet_name: str):
                     return v
     return None
 
-
 def extract_payer(description: str):
     if pd.isna(description):
         return "UNKNOWN"
@@ -65,25 +60,26 @@ def extract_payer(description: str):
             return key
     return "OTHER"
 
-
 def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     df = df.copy()
-    # Normalize column names
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
 
     # Flexible column detection
-    date_col_candidates = ["date", "transaction_date", "value_date"]
-    desc_col_candidates = ["desc", "description", "narr", "narration", "particulars"]
-    usd_col_candidates = ["usd", "amount_usd", "usd_amount"]
-    zwl_col_candidates = ["zwl", "amount_zwl", "zwg", "zwl_amount"]
+    date_cols = ["date", "transaction_date", "value_date"]
+    desc_cols = ["desc", "description", "narr", "narration", "particulars"]
+    usd_cols = ["usd", "amount_usd", "usd_amount"]
+    zwl_cols = ["zwl", "amount_zwl", "zwg", "zwl_amount"]
 
-    date_col = next((c for c in df.columns if any(dc in c for dc in date_col_candidates)), None)
-    desc_col = next((c for c in df.columns if any(dc in c for dc in desc_col_candidates)), None)
-    usd_col = next((c for c in df.columns if any(dc in c for dc in usd_col_candidates)), None)
-    zwl_col = next((c for c in df.columns if any(dc in c for dc in zwl_col_candidates)), None)
+    date_col = next((c for c in df.columns if any(dc in c for dc in date_cols)), None)
+    desc_col = next((c for c in df.columns if any(dc in c for dc in desc_cols)), None)
+    usd_col = next((c for c in df.columns if any(dc in c for dc in usd_cols)), None)
+    zwl_col = next((c for c in df.columns if any(dc in c for dc in zwl_cols)), None)
+
+    # Debug: show detected columns
+    st.write(f"Detected columns -> date: {date_col}, desc: {desc_col}, usd: {usd_col}, zwl: {zwl_col}")
 
     if not any([usd_col, zwl_col]):
-        return pd.DataFrame()  # Skip sheet if no currency columns found
+        return pd.DataFrame()
 
     out = pd.DataFrame()
     out["date"] = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.NaT
@@ -92,9 +88,7 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
     out["amount_zwl"] = pd.to_numeric(df[zwl_col], errors="coerce") if zwl_col else 0.0
     out["year_month"] = f"{year}-{month:02d}"
 
-    # Drop rows where both amounts are missing
     return out.dropna(subset=["amount_usd", "amount_zwl"], how="all")
-
 
 def load_workbook(file, year):
     try:
@@ -108,7 +102,7 @@ def load_workbook(file, year):
 
     frames = []
 
-    # DEBUG: show sheet names
+    # Debug: show all sheet names
     st.write("Sheets detected in the workbook:", list(sheets.keys()))
 
     for sheet, df in sheets.items():
@@ -124,7 +118,6 @@ def load_workbook(file, year):
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
-
 
 # ------------------------------------------------------------
 # UI – FILE UPLOAD
@@ -146,7 +139,6 @@ financial_year = st.number_input(
 )
 
 data = load_workbook(uploaded, financial_year)
-
 if data.empty:
     st.stop()
 
