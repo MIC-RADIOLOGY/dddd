@@ -3,7 +3,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import re
 
 st.set_page_config(
     page_title="Direct Deposit Cashflow Analytics",
@@ -46,7 +45,6 @@ def extract_payer(description: str):
     if pd.isna(description):
         return "UNKNOWN"
     text = description.upper()
-    # Adjust patterns as needed for your bank descriptions
     for key in ["PSMAS", "CIMAS", "NSSA", "MEDCOR", "FIRST MUTUAL", "ZIMNAT"]:
         if key in text:
             return key
@@ -77,7 +75,15 @@ def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
 
 
 def load_workbook(file, year):
-    sheets = pd.read_excel(file, sheet_name=None)
+    try:
+        sheets = pd.read_excel(file, sheet_name=None)
+    except ImportError:
+        st.error("Missing dependency: openpyxl is required to read Excel files. Install it via `pip install openpyxl`.")
+        st.stop()
+    except Exception as e:
+        st.error(f"Failed to read Excel file: {e}")
+        st.stop()
+
     frames = []
 
     for sheet, df in sheets.items():
@@ -91,7 +97,6 @@ def load_workbook(file, year):
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
-
 
 # ------------------------------------------------------------
 # UI – FILE UPLOAD
