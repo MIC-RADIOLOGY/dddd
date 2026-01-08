@@ -60,44 +60,6 @@ def extract_payer(description: str):
             return key
     return "OTHER"
 
-def find_header_row(df):
-    """
-    Look for the first row containing likely header keywords.
-    Returns the row index or None if not found.
-    """
-    for i, row in df.iterrows():
-        row_strs = [str(x).strip().lower() for x in row.values]
-        if any(k in row_strs for k in ["date", "description", "desc", "usd", "zwl"]):
-            return i
-    return None
-
-def clean_month_sheet(df: pd.DataFrame, year: int, month: int):
-    df = df.copy()
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-
-    # Flexible column detection
-    date_cols = ["date", "transaction_date", "value_date"]
-    desc_cols = ["desc", "description", "narr", "narration", "particulars"]
-    usd_cols = ["usd", "amount_usd", "usd_amount"]
-    zwl_cols = ["zwl", "amount_zwl", "zwg", "zwl_amount"]
-
-    date_col = next((c for c in df.columns if any(dc in c for dc in date_cols)), None)
-    desc_col = next((c for c in df.columns if any(dc in c for dc in desc_cols)), None)
-    usd_col = next((c for c in df.columns if any(dc in c for dc in usd_cols)), None)
-    zwl_col = next((c for c in df.columns if any(dc in c for dc in zwl_cols)), None)
-
-    if not any([usd_col, zwl_col]):
-        return pd.DataFrame()
-
-    out = pd.DataFrame()
-    out["date"] = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.NaT
-    out["payer"] = df[desc_col].apply(extract_payer) if desc_col else "UNKNOWN"
-    out["amount_usd"] = pd.to_numeric(df[usd_col], errors="coerce") if usd_col else 0.0
-    out["amount_zwl"] = pd.to_numeric(df[zwl_col], errors="coerce") if zwl_col else 0.0
-    out["year_month"] = f"{year}-{month:02d}"
-
-    return out.dropna(subset=["amount_usd", "amount_zwl"], how="all")
-
 def load_workbook(file, year):
     try:
         # Read all sheets without headers
@@ -111,6 +73,7 @@ def load_workbook(file, year):
 
     frames = []
 
+    # Debug info can be removed for production
     st.write("Sheets detected:", list(raw_sheets.keys()))
 
     for sheet_name, df in raw_sheets.items():
@@ -121,22 +84,29 @@ def load_workbook(file, year):
         # Fill merged cells vertically
         df = df.ffill(axis=0)
 
-        # Detect header row
-        header_row = find_header_row(df)
-        if header_row is None:
-            st.warning(f"No header found in {sheet_name}, skipping.")
+        # Force columns since headers are missing
+        if df.shape[1] < 4:
+            continue  # skip if not enough columns
+        df.columns = ["date", "payer", "reference", "amount"]
+
+        # Keep only rows with numeric amount
+        df = df[pd.to_numeric(df["amount"], errors="coerce").notna()]
+
+        if df.empty:
             continue
 
-        # Set header and take remaining rows as data
-        df.columns = df.iloc[header_row].values
-        df = df.iloc[header_row + 1 :].reset_index(drop=True)
+        # Prepare output dataframe
+        out = pd.DataFrame()
+        out["date"] = pd.to_datetime(df["date"], errors="coerce")
+        out["payer"] = df["payer"].apply(extract_payer)
+        out["amount_usd"] = pd.to_numeric(df["amount"], errors="coerce")
+        out["amount_zwl"] = 0.0  # assume USD
+        out["year_month"] = f"{year}-{month:02d}"
 
-        cleaned = clean_month_sheet(df, year, month)
-        if not cleaned.empty:
-            frames.append(cleaned)
+        frames.append(out)
 
     if not frames:
-        st.error("No valid monthly sheets detected. Check sheet headers.")
+        st.error("No valid monthly sheets detected. Check sheet data.")
         return pd.DataFrame()
 
     return pd.concat(frames, ignore_index=True)
