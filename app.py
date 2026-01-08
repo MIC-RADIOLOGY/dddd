@@ -3,298 +3,204 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import re
 
-st.set_page_config(
-    page_title="Direct Deposit Cashflow Analytics",
-    layout="wide"
-)
-
-st.title("Direct Deposit Cashflow Analytics")
-st.caption("Radiology Services | Medical Aid Cashflow Intelligence")
+st.set_page_config(page_title="Medical Aid Cashflow Dashboard", layout="wide")
 
 # ------------------------------------------------------------
-# CONFIG
+# CONSTANTS
 # ------------------------------------------------------------
-MONTH_MAP = {
-    "jan": 1, "january": 1,
-    "feb": 2, "february": 2,
-    "mar": 3, "march": 3,
-    "apr": 4, "april": 4,
-    "may": 5,
-    "jun": 6, "june": 6,
-    "jul": 7, "july": 7,
-    "aug": 8, "august": 8,
-    "sep": 9, "september": 9,
-    "oct": 10, "october": 10,
-    "nov": 11, "november": 11,
-    "dec": 12, "december": 12,
-}
-
-MEDICAL_AIDS = [
-    "ADVANTAGE",
-    "AETNA",
-    "ALLIANCE HEALTH ADMINISTRATOR",
-    "ALLIANZ",
-    "BAINES INTERCARE MEDICAL CENTRE",
-    "BONVIE",
-    "BUPA INTERNATIONAL",
-    "CAFCA",
-    "CASH SALES",
-    "CELLMED",
-    "CELLMED - PREFUND",
-    "CIGNA",
-    "CIMAS",
-    "DR D MOYO",
-    "DR G.T. CHATORA",
-    "DR KP KUSUTA",
-    "DR MUNGWADZI",
-    "DR NP MABOREKE",
-    "FBC HEALTH INSURANCE",
-    "FBC HOLDINGS SELF - MANAGED FUND",
-    "FIDELITY MEDICAL FUND",
-    "FIRST MUTUAL",
-    "GENERATIONS MEDICAL AID",
-    "GUNHILL MEDICAL VILLAGE",
-    "HEALTH INTERNATIONAL",
-    "HENNER HEALTHCARE",
-    "HIPPO VALLEY ESTATES",
-    "HORIZON INTERNATIONAL CARE",
-    "INTERVENTIONAL RADIOLOGY CLINIC",
-    "MAISHA HEALTH FUND",
-    "MASCA",
-    "MILTON PARK MEDICAL CENTRE",
-    "MSH INTERNATIONAL",
-    "MULTIMED",
-    "NATIONAL PARKS",
-    "NEWLANDS CLINIC",
-    "NORTHERN MEDICAL AID SOCIETY",
-    "OXFAM",
-    "QUEST VITALITY MEDICAL SCHEME",
-    "SEND ACCOUNT",
-    "VARICHEM PHARMACEUTICALS (PVT) LTD",
-    "WORLD HEALTH ORGANISATION",
-    "ZIMBABWE LEAF TOBACCO CLINIC",
+MONTHS = [
+    "JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE",
+    "JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"
 ]
+
+TRAILING_MONTHS = 3
 
 # ------------------------------------------------------------
 # HELPERS
 # ------------------------------------------------------------
-def normalise_month(sheet_name: str):
-    s = sheet_name.lower().strip()
-    for k, v in MONTH_MAP.items():
-        if k in s:
-            return v
-    return None
+def load_workbook(uploaded_file, year):
+    xls = pd.ExcelFile(uploaded_file)
+    all_rows = []
 
-def extract_payer(description):
-    if pd.isna(description):
-        return "UNMAPPED"
+    for sheet in xls.sheet_names:
+        sheet_upper = sheet.upper()
+        if sheet_upper not in MONTHS:
+            continue
 
-    text = str(description).upper()
+        df = pd.read_excel(uploaded_file, sheet_name=sheet, header=None)
 
-    noise = [
-        "TRANSFER", "RTGS", "EFT", "PAYMENT", "CREDIT",
-        "NOSTRO", "SETTLEMENT", "REF", "TRF",
-        "STANBIC", "CBZ", "FBC", "ECOCASH"
-    ]
-    for n in noise:
-        text = text.replace(n, "")
+        # Try to locate header row
+        header_row = None
+        for i in range(min(10, len(df))):
+            row = df.iloc[i].astype(str).str.lower()
+            if "date" in row.values and "amount" in row.values:
+                header_row = i
+                break
 
-    text = re.sub(r"\s+", " ", text).strip()
+        if header_row is None:
+            continue
 
-    for aid in MEDICAL_AIDS:
-        if aid in text:
-            return aid
+        df = pd.read_excel(uploaded_file, sheet_name=sheet, header=header_row)
+        df.columns = [c.lower().strip() for c in df.columns]
 
-    return "UNMAPPED"
+        # Normalize expected columns
+        col_map = {}
+        for c in df.columns:
+            if "date" in c:
+                col_map[c] = "date"
+            elif "payer" in c or "medical" in c:
+                col_map[c] = "payer"
+            elif "amount" in c or "paid" in c:
+                col_map[c] = "amount"
 
-# ------------------------------------------------------------
-# DATA LOADER (NO HEADERS, SAFE)
-# ------------------------------------------------------------
-def load_workbook(file, year):
-    try:
-        raw_sheets = pd.read_excel(file, sheet_name=None, header=None)
-    except Exception as e:
-        st.error(f"Failed to read Excel file: {e}")
+        df = df.rename(columns=col_map)
+
+        if not {"date","payer","amount"}.issubset(df.columns):
+            continue
+
+        df = df[["date","payer","amount"]]
+        df["month"] = sheet_upper
+        df["year"] = year
+
+        all_rows.append(df)
+
+    if not all_rows:
+        st.error("No usable data found.")
         st.stop()
 
-    frames = []
+    out = pd.concat(all_rows, ignore_index=True)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["amount"] = pd.to_numeric(out["amount"], errors="coerce").fillna(0)
 
-    st.write("Sheets detected:", list(raw_sheets.keys()))
+    return out
 
-    for sheet_name, df in raw_sheets.items():
-        month = normalise_month(sheet_name)
-        if not month:
-            continue
 
-        if df.empty:
-            continue
+def cashflow_status(pct):
+    if pct <= -10:
+        return "🔴 Cashflow Risk"
+    elif pct < 5:
+        return "🟠 Monitor Closely"
+    return "🟢 Healthy Growth"
 
-        df = df.ffill(axis=0)
 
-        if df.shape[1] < 4:
-            continue
+def payment_risk(days):
+    if days >= 45:
+        return "🔴 High Risk"
+    elif days >= 30:
+        return "🟠 Delayed"
+    return "🟢 Active"
 
-        df = df.iloc[:, :4]
-        df.columns = ["date", "payer", "reference", "amount"]
-
-        df = df[pd.to_numeric(df["amount"], errors="coerce").notna()]
-        if df.empty:
-            continue
-
-        out = pd.DataFrame()
-        out["date"] = pd.to_datetime(df["date"], errors="coerce")
-        out["payer"] = df["payer"].apply(extract_payer)
-        out["amount_usd"] = pd.to_numeric(df["amount"], errors="coerce")
-        out["amount_zwl"] = 0.0
-        out["year_month"] = f"{year}-{month:02d}"
-
-        frames.append(out)
-
-    if not frames:
-        st.error("No valid monthly data detected.")
-        return pd.DataFrame()
-
-    return pd.concat(frames, ignore_index=True)
 
 # ------------------------------------------------------------
-# UI – FILE UPLOAD
+# UI
 # ------------------------------------------------------------
-uploaded = st.file_uploader(
-    "Upload Financial Year Direct Deposit Workbook",
-    type=["xlsx"]
-)
+st.title("📊 Medical Aid Cashflow Early-Warning Dashboard")
+
+uploaded = st.file_uploader("Upload Direct Deposit Excel", type=["xlsx"])
+year = st.number_input("Financial Year", value=datetime.now().year)
 
 if not uploaded:
-    st.info("Upload the Excel file to begin analysis.")
     st.stop()
 
-financial_year = st.number_input(
-    "Financial Year",
-    min_value=2000,
-    max_value=2100,
-    value=datetime.now().year
-)
-
-data = load_workbook(uploaded, financial_year)
-if data.empty:
-    st.stop()
+df = load_workbook(uploaded, year)
 
 # ------------------------------------------------------------
-# MONTH LOGIC
+# MONTH SELECTION
 # ------------------------------------------------------------
-months = sorted(data["year_month"].unique())
-current_month = months[-1]
-previous_month = months[-2] if len(months) > 1 else None
+available_months = sorted(df["month"].unique(), key=lambda x: MONTHS.index(x))
+selected_month = st.selectbox("Select Month", available_months)
+
+current_idx = MONTHS.index(selected_month)
+prev_month = MONTHS[current_idx - 1] if current_idx > 0 else None
+
+current_df = df[df["month"] == selected_month]
+prev_df = df[df["month"] == prev_month] if prev_month else None
+
+total_current = current_df["amount"].sum()
+total_previous = prev_df["amount"].sum() if prev_df is not None else None
 
 # ------------------------------------------------------------
-# CURRENCY SELECTION
+# KPI ROW
 # ------------------------------------------------------------
-currency = st.radio("Currency", ["USD", "ZWL"], horizontal=True)
-amount_col = "amount_usd" if currency == "USD" else "amount_zwl"
-
-# ------------------------------------------------------------
-# DASHBOARD
-# ------------------------------------------------------------
-st.subheader(f"Reporting Month: {current_month}")
-
-current_df = data[data["year_month"] == current_month]
-prev_df = data[data["year_month"] == previous_month] if previous_month else None
-
-total_current = current_df[amount_col].sum()
-total_previous = prev_df[amount_col].sum() if prev_df is not None else None
-
 c1, c2, c3 = st.columns(3)
-c1.metric(f"Total {currency}", f"{total_current:,.2f}")
+
+c1.metric("Total Collections", f"{total_current:,.2f}")
 
 if total_previous and total_previous != 0:
     pct = ((total_current - total_previous) / total_previous) * 100
-    c2.metric("MoM Change", f"{pct:.1f}%", delta=f"{pct:.1f}%")
+    label = f"MoM Change ({prev_month[:3]} → {selected_month[:3]})"
+    c2.metric(label, f"{pct:.1f}%", delta=f"{pct:.1f}%")
+    c3.metric("Cashflow Status", cashflow_status(pct))
 else:
     c2.metric("MoM Change", "N/A")
+    c3.metric("Cashflow Status", "N/A")
 
-c3.metric(
-    "Active Medical Aids",
-    current_df[current_df[amount_col] > 0]["payer"].nunique()
+st.caption(
+    "ℹ️ MoM Change = ((Current Month − Previous Month) ÷ Previous Month) × 100"
 )
 
 # ------------------------------------------------------------
-# RANKINGS
+# MONTHLY TREND + SPARKLINE
 # ------------------------------------------------------------
-st.subheader("Medical Aid Rankings")
+monthly_totals = (
+    df.groupby("month")["amount"]
+    .sum()
+    .reindex(MONTHS)
+    .dropna()
+)
 
-ranking = (
-    current_df.groupby("payer")[amount_col]
+st.subheader("📈 Monthly Collections Trend")
+st.line_chart(monthly_totals)
+
+last_6 = monthly_totals.iloc[max(0, current_idx - 5): current_idx + 1]
+st.caption("Last 6 months trend")
+st.line_chart(last_6, height=120)
+
+# ------------------------------------------------------------
+# FORECAST
+# ------------------------------------------------------------
+forecast = monthly_totals.tail(TRAILING_MONTHS).mean()
+
+st.subheader("🧠 Next-Month Forecast")
+st.metric(
+    f"Expected Collections (Trailing {TRAILING_MONTHS}-Month Avg)",
+    f"{forecast:,.2f}"
+)
+
+# ------------------------------------------------------------
+# TOP MEDICAL AIDS (BAR CHART)
+# ------------------------------------------------------------
+st.subheader("🏥 Top Medical Aids – Selected Month")
+
+top_payers = (
+    current_df.groupby("payer")["amount"]
     .sum()
     .sort_values(ascending=False)
+    .head(10)
+)
+
+st.bar_chart(top_payers)
+
+# ------------------------------------------------------------
+# DAYS SINCE LAST PAYMENT
+# ------------------------------------------------------------
+latest_date = df["date"].max()
+
+dslp = (
+    df.groupby("payer")["date"]
+    .max()
     .reset_index()
 )
 
-ranking["rank"] = range(1, len(ranking) + 1)
-ranking["contribution_%"] = (ranking[amount_col] / total_current * 100).round(2)
+dslp["days_since_last_payment"] = (latest_date - dslp["date"]).dt.days
+dslp["status"] = dslp["days_since_last_payment"].apply(payment_risk)
+dslp = dslp.sort_values("days_since_last_payment", ascending=False)
 
-st.dataframe(ranking, use_container_width=True)
+st.subheader("⏳ Days Since Last Payment (Risk View)")
+st.dataframe(dslp, use_container_width=True)
 
-# ------------------------------------------------------------
-# MONTH-ON-MONTH COMPARISON
-# ------------------------------------------------------------
-st.subheader("Month-on-Month Comparison")
-
-if previous_month:
-    comparison = (
-        current_df.groupby("payer")[amount_col].sum()
-        .to_frame("current")
-        .join(
-            prev_df.groupby("payer")[amount_col].sum().to_frame("previous"),
-            how="outer"
-        )
-        .fillna(0)
-    )
-
-    comparison["change"] = comparison["current"] - comparison["previous"]
-    comparison["change_%"] = np.where(
-        comparison["previous"] == 0,
-        np.nan,
-        (comparison["change"] / comparison["previous"]) * 100
-    )
-
-    st.dataframe(comparison.reset_index(), use_container_width=True)
-else:
-    st.info("Only one month available. Comparison will activate automatically.")
-
-# ------------------------------------------------------------
-# RISK ALERTS
-# ------------------------------------------------------------
-st.subheader("Risk Alerts")
-
-alerts = []
-if previous_month:
-    for payer, row in comparison.iterrows():
-        if row["previous"] > 0 and row["change_%"] < -30:
-            alerts.append({
-                "payer": payer,
-                "issue": "Significant drop",
-                "change_%": round(row["change_%"], 1)
-            })
-
-if alerts:
-    st.dataframe(pd.DataFrame(alerts))
-else:
-    st.success("No critical alerts detected.")
-
-# ------------------------------------------------------------
-# DATA QUALITY – UNMAPPED
-# ------------------------------------------------------------
-st.subheader("Unmapped Deposits (Review Required)")
-
-unmapped = data[data["payer"] == "UNMAPPED"]
-
-if unmapped.empty:
-    st.success("All deposits successfully mapped to medical aids.")
-else:
-    st.warning("Some deposits could not be mapped.")
-    st.dataframe(
-        unmapped[["date", "amount_usd", "year_month"]],
-        use_container_width=True
-    )
+# Graph
+st.subheader("📉 Payment Delay by Medical Aid")
+delay_chart = dslp.set_index("payer")["days_since_last_payment"]
+st.bar_chart(delay_chart)
